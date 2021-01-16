@@ -1,27 +1,24 @@
-#include <GDBStub.h>
 
-#include <Ethernet.h>
+
 
 #include <ESP8266WiFi.h>
+#include <FirebaseESP8266.h>
 #include <EasyNTPClient.h>
 #include <WiFiUdp.h>
 #include <SoftwareSerial.h>
-#include <FirebaseArduino.h>
-#include <ESP8266HTTPClient.h>
 #include <ESP8266WebServer.h>
 #include <EEPROM.h>
-
-
 #include <Wire.h>
 #include "MAX30100_PulseOximeter.h"
-// Set these to run example.
+#define WIFI_SSID "Rizaq"
+#define WIFI_PASSWORD "0799534354RIZAQ!((^"
 #define FIREBASE_HOST "baby-care-af448.firebaseio.com"
 #define FIREBASE_AUTH "A7babaGtwABTBOblSn9F0IJH96jeCrpC6ImGpSC6"
-//#define WIFI_SSID "Rizaq"
-//#define WIFI_PASSWORD "0799534354RIZAQ!((^"
 
 
-#define REPORTING_PERIOD_MS     4000
+#define REPORTING_PERIOD_MS     2000
+
+
 
 //Variables
 int i = 0;
@@ -46,9 +43,8 @@ WiFiUDP ntpUDP;
 EasyNTPClient ntpClient(ntpUDP, "asia.pool.ntp.org", (7200)); // IST = GMT + 5:30
 
 
-
 long previousMillis = 0;
-long interval = 30000;
+long interval = 60000;
 volatile boolean heartBeatDetected = false;
 
 //lm35------------------------------
@@ -73,6 +69,19 @@ uint32_t tsLastReport = 0;
 
 String userId = "";
 String babyId = "";
+FirebaseData fbdo;
+
+
+unsigned long sendDataPrevMillis = 0;
+//
+FirebaseData fbdo1;
+FirebaseData fbdo2;
+String path;
+//String path = "/Test/Stream";
+String parentPath;
+String childPath[2] = {"/data"};
+size_t childPathSize = 2;
+
 // Callback (registered below) fired when a pulse is detected
 void onBeatDetected()
 {
@@ -80,9 +89,43 @@ void onBeatDetected()
   Serial.println("Beat!");
 }
 
-void setup()
-{
 
+
+void printResult(FirebaseData &data);
+
+void streamCallback(MultiPathStreamData stream)
+{
+  Serial.println();
+  Serial.println("Stream Data1 available...");
+
+  size_t numChild = sizeof(childPath) / sizeof(childPath[0]);
+
+  for (size_t i = 0; i < numChild; i++)
+  {
+    if (stream.get(childPath[i]))
+    {
+      Serial.println("path: " + stream.dataPath + ", type: " + stream.type + ", value: " + stream.value);
+    }
+  }
+
+  Serial.println();
+
+}
+
+
+
+void streamTimeoutCallback(bool timeout)
+{
+  if (timeout)
+  {
+    Serial.println();
+    Serial.println("Stream timeout, resume streaming...");
+    Serial.println();
+  }
+}
+
+
+void setup() {
   Serial.begin(115200); //Initialising if(DEBUG)Serial Monitor
   Serial.println();
   Serial.println("Disconnecting previously connected WiFi");
@@ -124,7 +167,7 @@ void setup()
   if (testWifi())
   {
     Serial.println("Succesfully Connected!!!");
-    delay(8000);
+    delay(100);
   }
   else
   {
@@ -142,32 +185,64 @@ void setup()
     delay(100);
     server.handleClient();
   }
+
   delay(100);
-  Serial.println();
-  Serial.print("connected: ");
-  pinMode(sensor, INPUT);
+
+
   Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
-  Serial.print("Initialize a NTPClient to get time..");
-  delay(5000);
+  Firebase.reconnectWiFi(true);
+  fbdo.setBSSLBufferSize(1024, 1024);
+  fbdo.setResponseSize(1024);
 
-  while (userId == "")
+    //Set the size of WiFi rx/tx buffers in the case where we want to work with large data.
+  fbdo1.setBSSLBufferSize(1024, 1024);
+
+  //Set the size of HTTP response buffers in the case where we want to work with large data.
+  fbdo1.setResponseSize(1024);
+
+
+  //Set the size of WiFi rx/tx buffers in the case where we want to work with large data.
+  fbdo2.setBSSLBufferSize(1024, 1024);
+
+  //Set the size of HTTP response buffers in the case where we want to work with large data.
+  fbdo2.setResponseSize(1024);
+  //
+
+  if (userId == "")
   {
-      Serial.println(" while ...... " + Firebase.getString("12345/userId"));
-    userId = String(Firebase.getString("12345/userId"));
-    Serial.println(" while ...... " + userId);
-    Serial.println(Firebase.error());
-    Serial.println(Firebase.failed());
-    delay(4000);
-  }
-  while (babyId == "")
-  { Serial.print(" babyId ...... " + babyId);
-    babyId = String(Firebase.getString("12345/babyId"));
-             Serial.println(" while ...... " + babyId);
-    delay(1000);
-  }
-  Serial.print("Initializing pulse oximeter..");
+    Serial.println(" while ...... " + parentPath);
 
-  // Initialize the PulseOximeter instance
+    if (Firebase.getString(fbdo, "12345/babyId")) {
+
+      if (fbdo.dataType() == "string") {
+        Serial.println(fbdo.stringData());
+
+
+        babyId = fbdo.stringData();
+        parentPath = "/babys/" + babyId + "/data/";
+        path = "/babys/" + babyId + "/logs/";
+        Serial.println(" while ...... " + parentPath);
+
+      }
+
+    } else {
+      Serial.println(fbdo.errorReason());
+    }
+    delay(1000);
+
+  }
+
+  if (!Firebase.beginMultiPathStream(fbdo1, parentPath, childPath, childPathSize))
+  {
+    Serial.println("------------------------------------");
+    Serial.println("Can't begin stream connection...");
+    Serial.println("REASON: " + fbdo1.errorReason());
+    Serial.println("------------------------------------");
+    Serial.println();
+  }
+
+  Firebase.setMultiPathStreamCallback(fbdo1, streamCallback, streamTimeoutCallback);
+
 
   if (!pox.begin()) {
     Serial.println("FAILED");
@@ -179,24 +254,24 @@ void setup()
 
   // Register a callback for the beat detection
   pox.setOnBeatDetectedCallback(onBeatDetected);
-
 }
 
-void loop()
-{
+
+void loop() {
+
 
   vout = analogRead(sensor); //Reading the value from sensor
 
   // Converting to Fahrenheit
   vout = (vout * 330.0) / 1023.0;
 
-  tempc = vout - 10 ; // Storing value in Degree Celsius
+  tempc = vout ; // Storing value in Degree Celsius
 
   tempf = (vout * 1.8) + 32;
 
   pox.update();
 
-  unsigned long currentMillis = millis();
+//  unsigned long currentMillis = millis();
   if (millis() - tsLastReport > REPORTING_PERIOD_MS) {
     float bpm = pox.getHeartRate();
     float SpO2 = pox.getSpO2();
@@ -207,99 +282,67 @@ void loop()
     Serial.print("temp / temp:");
     Serial.print(tempc);
     Serial.println("%");
-    if (currentMillis - previousMillis >= interval)
+    if (millis() - sendDataPrevMillis > 6000)
     {
+       sendDataPrevMillis = millis();
+      pox.shutdown();
 
-      bool sendeing = true;
-      if (sendeing) {
-        pox.shutdown();
+      
+  Serial.println("------------------------------------");
+    Serial.println("Set JSON..."+ parentPath);
+
+      
+      FirebaseJson json;
+      json.set("bpm", bpm);
+      json.set("SpO2", SpO2);
+      json.set("tempc", tempc);
+    
+      if (Firebase.setJSON(fbdo2, parentPath, json))
+      {
+
+        Serial.println("PASSED");
+        Serial.println();
+      }
+      else
+      {
+//        pox.resume();
+        Serial.println("FAILED");
+        Serial.println("REASON: " + fbdo2.errorReason());
+        Serial.println("------------------------------------");
+        Serial.println();
       }
 
-  
-      if (sendeing) {
-        
-        //    userId =  Firebase.getString("12345/babyId");
-   if (bpm != 0 && SpO2 < 95) {
-          SpO2 = 95;
-        } else if (bpm != 0 && SpO2 > 101) {
-        SpO2 = 100;
-        }
-        
-
-        Firebase.setInt("babys/" + babyId + "/Data/bpm", bpm);
-        if (Firebase.failed()) {
-          //          Serial.print("setting /number failed:");
-          Serial.println(Firebase.error());
-          return;
-        }
-        delay(100);
-        Firebase.setFloat("babys/" + babyId + "/Data/SpO2", SpO2);
-        if (Firebase.failed()) {
-          //          Serial.print("setting /number failed:");
-          Serial.println(Firebase.error());
-          return;
-        }
-        delay(100);
-        Firebase.setFloat("babys/" + babyId + "/Data/temp", tempc);
-        if (Firebase.failed()) {
-          //          Serial.print("setting /number failed:");
-          Serial.println(Firebase.error());
-          return;
-        }
-        delay(100);
+      pox.resume();
+      Serial.println("------------------------------------");
+      Serial.println("Set JSON...");
 
 
 
-        if (bpm != 0  && SpO2 != 0) {
 
-          String currentDate = String(ntpClient.getUnixTime());
-          //        String(currentYear) + ":" + String(currentMonth) + ":" + String(monthDay) + ":" + String(formattedTime);
-          //      delay(100);
-          //          Serial.println("currentDate:" + currentDate);
-          Serial.println("shutdown");
-          Firebase.setInt("babys/" + babyId  + "logs/bpm/" + currentDate, bpm);
-          // handle error
-          if (Firebase.failed()) {
-            //            Serial.print("setting /message failed:");
-            Serial.println(Firebase.error());
-            return;
-          }
-          delay(100);
-
-          Firebase.setInt("babys/" + babyId  + "/logs/SpO2/" + currentDate, SpO2);
-          // handle error
-          if (Firebase.failed()) {
-            //            Serial.print("setting /message failed:");
-            Serial.println(Firebase.error());
-            return;
-          }
-          delay(100);
-
-          Firebase.setInt("babys/" + babyId + "/logs/temp/" + currentDate, tempc);
-          // handle error
-          if (Firebase.failed()) {
-            //            Serial.print("setting /message failed:");
-            Serial.println(Firebase.error());
-            return;
-          }
-          delay(500);
-        }
-        sendeing = false;
-      }
-      if (sendeing) {
-
-        Serial.println("sendeing........");
-      } else {
-        pox.resume();
-        //pox.begin();
-        previousMillis = currentMillis;
-        Serial.println("resume");
-      }
 
     }
+
+
+
     tsLastReport = millis();
   }
+
+
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
